@@ -1,0 +1,7 @@
+[Unit]
+Description=Mark this rootfs as successfully booted
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'touch /.boot-ok; rm -f /.boot-count'
+[Install]
+WantedBy=multi-user.target

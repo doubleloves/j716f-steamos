@@ -1,0 +1,25 @@
+#!/bin/sh
+# Keep libGLX_steamarmlax.so.0 in sync with system Mesa GLX; rebuilds only on checksum change.
+SRC=$(realpath /usr/lib/aarch64-linux-gnu/libGLX_mesa.so.0 2>/dev/null) || exit 0
+[ -f "$SRC" ] || exit 0
+OUT=/usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0
+STAMP=/usr/local/lib/steam-arm-glx-lax.src
+# Fast path for the apt hook: source path, size and mtime unchanged since last build.
+STAT=/usr/local/lib/steam-arm-glx-lax.stat
+# patched | unpatched: drop signal of patch glx-lax (launcher reads it)
+STATE=/usr/local/lib/steam-arm-glx-lax.state
+ST="$SRC $(stat -c '%s %Y' "$SRC")"
+[ -f "$OUT" ] && [ -f "$STATE" ] && [ "$(cat "$STAT" 2>/dev/null)" = "$ST" ] && exit 0
+SUM=$(sha256sum "$SRC" | cut -c1-64)
+[ -f "$OUT" ] && [ -f "$STATE" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$SUM" ] && [ "$(patchelf --print-soname "$OUT" 2>/dev/null)" = libGLX_steamarmlax.so.0 ] && { echo "$ST" > "$STAT"; exit 0; }
+T=$(mktemp "$OUT.XXXXXX") || exit 1
+trap 'rm -f "$T"' EXIT
+if python3 /usr/local/lib/steam-arm-glx-lax-patch.py "$SRC" "$T" >/dev/null 2>&1; then
+  RES=patched; echo "steam-arm-glx-lax: patched copy built from $(basename "$SRC")"
+else
+  RES=unpatched; cp -f "$SRC" "$T"
+  echo "steam-arm-glx-lax: pattern not found in $(basename "$SRC"); vendor library is an unpatched copy" >&2
+fi
+# Own SONAME so Steam Linux Runtime containers copy this vendor lib in too.
+command -v patchelf >/dev/null && patchelf --set-soname libGLX_steamarmlax.so.0 "$T"
+chmod 644 "$T" && mv -f "$T" "$OUT" && echo "$SUM" > "$STAMP" && echo "$ST" > "$STAT" && echo "$RES" > "$STATE" && ldconfig

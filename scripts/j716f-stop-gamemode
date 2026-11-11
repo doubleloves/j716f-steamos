@@ -1,0 +1,5 @@
+#!/bin/bash
+# Stop Game Mode and return to the text console/SSH.
+pkill -f 'gamescope|steamrtarm64/steam' 2>/dev/null || true
+sleep 2
+echo "Game Mode stopped"

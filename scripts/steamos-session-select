@@ -1,0 +1,13 @@
+#!/bin/sh
+# steamos-session-select for steam-arm: restart the client in the interface the power menu chose.
+case "${1:-}" in
+  plasma|plasma-x11|plasma-wayland|plasma-x11-persistent|plasma-wayland-persistent|desktop) m=--desktop;;
+  *) m=--bigpicture;;
+esac
+u=$(id -un); h=$(getent passwd "$(id -u)" | cut -d: -f6)
+setsid env -i HOME="$h" USER="$u" LOGNAME="$u" PATH=/usr/local/bin:/usr/bin:/bin \
+  DISPLAY="${DISPLAY:-:0}" XAUTHORITY="${XAUTHORITY:-$h/.Xauthority}" LANG="${LANG:-C.UTF-8}" \
+  XDG_RUNTIME_DIR="/run/user/$(id -u)" XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-}" \
+  XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-x11}" WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-}" \
+  /usr/local/bin/steam-arm "$m" </dev/null >/dev/null 2>&1 &
+exit 0

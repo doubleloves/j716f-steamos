@@ -1,0 +1,100 @@
+#!/bin/bash
+# display-recover — 显示卡死时，不重启整机，尝试把画面救回来
+#
+#   display-recover --check   只看状态，不动显示（安全，可随时跑）
+#   display-recover           尝试恢复（会短暂黑屏，几秒）
+#
+# 判定依据：DRM 的 vsync 计数（命令模式面板 TE 帧数，正常约 91/秒）。
+#   · vsync 在走            → 显示链路正常，卡住的是某个应用
+#   · X 有响应但 vsync 停   → 显示链路卡住 → 用 xrandr/DPMS 重建
+#   · X 没有响应            → 图形会话死了 → 需要重启 Xorg
+set -u
+
+CHECK=0
+[ "${1:-}" = "--check" ] && CHECK=1
+
+xpid=$(pgrep -x Xorg | head -n1)
+if [ -z "$xpid" ]; then
+    echo "✗ Xorg 没有运行"
+    exit 3
+fi
+
+cmdline=$(tr '\0' ' ' < "/proc/$xpid/cmdline" 2>/dev/null)
+DISPLAY=$(printf '%s' "$cmdline" | grep -oE ':[0-9]+' | head -n1)
+AUTH=$(printf '%s' "$cmdline" | sed -n 's/.*-auth \([^ ]*\).*/\1/p')
+export DISPLAY=${DISPLAY:-:0}
+[ -n "$AUTH" ] && export XAUTHORITY="$AUTH"
+
+vsync() {
+    sudo -n sed -n '1s/.*vsync:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+        /sys/kernel/debug/dri/0/encoder-0/status 2>/dev/null
+}
+dpms() { cat /sys/class/drm/card0-DSI-1/dpms 2>/dev/null; }
+
+if timeout 3 xset q >/dev/null 2>&1; then x_alive=1; else x_alive=0; fi
+
+out=$(timeout 3 xrandr --query 2>/dev/null | awk '/ connected/{print $1; exit}')
+v0=$(vsync)
+sleep 1
+v1=$(vsync)
+
+echo "Xorg      : pid=$xpid  DISPLAY=$DISPLAY  XAUTHORITY=${AUTH:-none}"
+echo "输出      : ${out:-未知}   dpms=$(dpms)"
+echo "vsync     : $v0 -> $v1  (1 秒)"
+echo "X 响应    : $([ "$x_alive" = 1 ] && echo 是 || echo 否)"
+echo
+
+if [ "$x_alive" = 0 ]; then
+    echo "✗ X 不响应 —— 图形会话死了，重建需要重启 Xorg："
+    echo "    sudo pkill -x Xorg      # xinit 会重新拉起，桌面会重开"
+    echo "    （正在运行的程序会退出）"
+    exit 2
+fi
+
+if [ -n "$v0" ] && [ -n "$v1" ] && [ "$v0" != "$v1" ]; then
+    echo "✓ 画面仍在刷新（vsync 在前进），显示链路正常。"
+    echo "  卡住的是某个应用/窗口，不是显示层——不需要重启显示。"
+    exit 0
+fi
+
+echo "✗ 画面静止：X 活着，但显示链路不再出帧。"
+if [ "$CHECK" = 1 ]; then
+    echo "  （--check 模式，不做任何改动）"
+    exit 1
+fi
+if [ -z "$out" ]; then
+    echo "✗ 找不到已连接的输出，无法自动恢复"
+    exit 1
+fi
+
+sudo -n /usr/local/sbin/x-freeze-watchdog.sh --dump-now >/dev/null 2>&1
+echo "→ 现场已保存：$(sudo -n ls -1t /var/log/dsh-freeze/freeze-*.log 2>/dev/null | head -n1)"
+echo
+
+echo "→ 第 1 步：重建显示链路（xrandr $out off / auto）"
+timeout 10 xrandr --output "$out" --off 2>&1
+sleep 2
+timeout 10 xrandr --output "$out" --auto 2>&1
+sleep 3
+v2=$(vsync); sleep 1; v3=$(vsync)
+echo "   vsync: $v2 -> $v3"
+if [ -n "$v2" ] && [ -n "$v3" ] && [ "$v2" != "$v3" ]; then
+    echo "✓ 已恢复（画面重新开始刷新）"
+    exit 0
+fi
+
+echo "→ 第 2 步：DPMS 关/开"
+timeout 10 xset dpms force off 2>&1
+sleep 3
+timeout 10 xset dpms force on 2>&1
+sleep 3
+v4=$(vsync); sleep 1; v5=$(vsync)
+echo "   vsync: $v4 -> $v5"
+if [ -n "$v4" ] && [ -n "$v5" ] && [ "$v4" != "$v5" ]; then
+    echo "✓ 已恢复"
+    exit 0
+fi
+
+echo "✗ 仍未恢复。下一步只能重启图形会话："
+echo "    sudo pkill -x Xorg"
+exit 1

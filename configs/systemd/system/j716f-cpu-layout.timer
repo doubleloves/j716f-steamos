@@ -1,0 +1,9 @@
+[Unit]
+Description=Maintain J716F CPU layout
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Unit=j716f-cpu-layout.service
+[Install]
+WantedBy=timers.target

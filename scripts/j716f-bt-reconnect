@@ -1,0 +1,48 @@
+#!/bin/bash
+DEVFILE=/etc/j716f/bt-devices
+ADAPTER=/org/bluez/hci0
+LOG=/var/log/j716f-bt-reconnect.log
+rfkill unblock bluetooth 2>/dev/null
+while true; do
+
+  # Enforce WakeAllowed=false for every known device: kernel 6.13 does not
+  # support HCI_CONN_FLAG_REMOTE_WAKEUP; BlueZ 5.87 + WakeAllowed=true causes
+  # QCA6390 hard reset during background scan.
+  for inf in $(find /var/lib/bluetooth -mindepth 3 -maxdepth 3 -name info 2>/dev/null); do
+    d=$(dirname "$inf")
+    mac=$(basename "$d")
+    dev="/org/bluez/hci0/dev_${mac//:/_}"
+    w=$(busctl --system get-property org.bluez "$dev" org.bluez.Device1 WakeAllowed 2>/dev/null)
+    case "$w" in
+      *true*) busctl --system set-property org.bluez "$dev" org.bluez.Device1 WakeAllowed b false >/dev/null 2>&1 ;;
+    esac
+  done
+  rfkill unblock bluetooth 2>/dev/null
+  # avoid controller hotplug while a Wine game is running: with MangoApp
+  # overlay, hotplug can blank the DSI panel. Connect controller before game.
+  if pgrep -f 'steam\.exe|ICEY\.exe|Human\.exe' >/dev/null 2>&1; then
+    sleep 8
+    continue
+  fi
+  st=$(busctl --system get-property org.bluez "$ADAPTER" org.bluez.Adapter1 Powered 2>/dev/null)
+  case "$st" in
+    *true*) ;;
+    *) busctl --system set-property org.bluez "$ADAPTER" org.bluez.Adapter1 Powered b true >/dev/null 2>&1 ;;
+  esac
+  if [ -f "$DEVFILE" ]; then
+    while IFS= read -r MAC; do
+      [ -n "$MAC" ] || continue
+      DEV="/org/bluez/hci0/dev_${MAC//:/_}"
+      state=$(busctl --system get-property org.bluez "$DEV" org.bluez.Device1 Connected 2>/dev/null)
+      case "$state" in
+        *true*) ;;
+        *)
+          echo "$(date '+%F %T') $MAC connect attempt" >> "$LOG"
+          out=$(busctl --system call org.bluez "$DEV" org.bluez.Device1 Connect 2>&1)
+          echo "$(date '+%F %T') $MAC result: $out" >> "$LOG"
+          ;;
+      esac
+    done < "$DEVFILE"
+  fi
+  sleep 8
+done

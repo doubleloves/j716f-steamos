@@ -1,0 +1,13 @@
+[Unit]
+Description=J716F volume key -> PulseAudio sink
+After=sound.target
+Wants=sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/j716f-volume-keys
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,54 @@
+#!/bin/bash
+# J716F SD card mount helper (auto mount/unmount, called from systemd + udev).
+# Card detected as /dev/mmcblk0p1 (FAT32; exfat/ext4/ntfs if kernel supports).
+# NOTE: this kernel has no nls_utf8 module, so vfat UTF-8 names can't be shown;
+#       we try utf8 first and fall back to the default charset.
+DEV=/dev/mmcblk0
+PART=/dev/mmcblk0p1
+MNT=/mnt/sdcard
+ACTION="${1:-add}"
+log() { echo "j716f-sdcard: $*" | systemd-cat -t j716f-sdcard -p info 2>/dev/null || true; }
+
+case "$ACTION" in
+  add)
+    [ -b "$PART" ] || exit 0
+    mkdir -p "$MNT" || exit 1
+    if mountpoint -q "$MNT"; then log "already mounted"; exit 0; fi
+    for i in $(seq 1 20); do
+      [ -n "$(blkid -o value -s TYPE "$PART" 2>/dev/null)" ] && break
+      sleep 0.2
+    done
+    fstype=$(blkid -o value -s TYPE "$PART" 2>/dev/null)
+    [ -z "$fstype" ] && fstype=vfat
+    case "$fstype" in
+      vfat|exfat|msdos)
+        base="rw,noatime,uid=1001,gid=1001,umask=0007,flush"
+        opts="$base,iocharset=utf8" ;;
+      *)
+        base="rw,noatime"; opts="$base" ;;
+    esac
+    ok=0
+    if mount -t "$fstype" -o "$opts" "$PART" "$MNT" 2>/dev/null; then
+      ok=1
+    elif [ "$opts" != "$base" ] && mount -t "$fstype" -o "$base" "$PART" "$MNT" 2>/dev/null; then
+      ok=1
+    fi
+    if [ "$ok" = 1 ]; then
+      chown 1001:1001 "$MNT" 2>/dev/null || true
+      log "mounted $PART ($fstype) on $MNT"
+    else
+      log "mount failed: $PART ($fstype)"
+      exit 1
+    fi
+    ;;
+  remove)
+    if mountpoint -q "$MNT"; then
+      umount -l "$MNT" 2>/dev/null || umount "$MNT" 2>/dev/null || true
+      log "unmounted $MNT (card removed)"
+    fi
+    ;;
+  status)
+    mountpoint -q "$MNT" && { echo "mounted:"; mount | grep " $MNT "; ls -la "$MNT" | head; } || echo "not mounted"
+    ;;
+  *) echo "usage: $0 add|remove|status"; exit 1;;
+esac

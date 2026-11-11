@@ -1,0 +1,33 @@
+#!/bin/busybox sh
+# J716F mini-recovery: minimal init.  Booted from recovery_a/recovery_b only.
+# The real work lives in /recovery.sh; this file just brings up the basics.
+
+/bin/busybox --install -s 2>/dev/null
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/root
+
+mkdir -p /proc /sys /dev /tmp /run /mnt /mnt/data /mnt/src
+mount -t proc     proc     /proc   2>/dev/null
+mount -t sysfs    sysfs    /sys    2>/dev/null
+mount -t devtmpfs devtmpfs /dev    2>/dev/null
+mount -t tmpfs    tmpfs    /tmp    2>/dev/null
+mount -t tmpfs    tmpfs    /run    2>/dev/null
+mkdir -p /dev/pts && mount -t devpts devpts /dev/pts 2>/dev/null
+
+# show something on whatever console exists
+for t in /dev/tty0 /dev/tty1 /dev/console; do
+    [ -e "$t" ] || continue
+    {
+        echo ""
+        echo "=================================================="
+        echo "  J716F mini-recovery"
+        echo "  $(cat /proc/version)"
+        echo "=================================================="
+        echo ""
+    } > "$t" 2>/dev/null
+done
+
+# watchdog: 任何情况下 90 秒后强制重启，避免 recovery 卡死把设备留在恢复模式
+( sleep 90; /bin/busybox reboot -f ) >/dev/null 2>&1 &
+
+exec /recovery.sh

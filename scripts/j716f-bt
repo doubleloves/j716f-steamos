@@ -1,0 +1,49 @@
+#!/bin/bash
+# J716F Bluetooth helper (BlueZ 5.72 service, QCA6390 scan-safe)
+DEVFILE=/etc/j716f/bt-devices
+CMD="${1:-help}"
+case "$CMD" in
+  on)
+    rfkill unblock bluetooth 2>/dev/null
+    iw dev wlp1s0 set power_save off 2>/dev/null
+    systemctl start j716f-bluez572.service 2>/dev/null
+    sleep 4
+    echo "service=$(systemctl is-active j716f-bluez572.service)"
+    if [ -f "$DEVFILE" ]; then
+      while IFS= read -r mac; do
+        [ -n "$mac" ] || continue
+        echo "connecting $mac"
+        /usr/local/bin/bluetoothctl --timeout 25 connect "$mac" 2>&1 | tail -3
+      done < "$DEVFILE"
+    fi
+    ;;
+  off)
+    systemctl stop j716f-bluez572.service 2>/dev/null
+    rfkill block bluetooth 2>/dev/null
+    echo "bluetooth off"
+    ;;
+  discover)
+    rfkill unblock bluetooth 2>/dev/null
+    /usr/local/bin/bluetoothctl --timeout 15 scan on 2>&1 | tail -20
+    /usr/local/bin/bluetoothctl --timeout 8 devices 2>&1 | head -20
+    ;;
+  pair)
+    mac="$2"
+    [ -n "$mac" ] || { echo "usage: j716f-bt pair <MAC>"; exit 1; }
+    /usr/local/bin/bluetoothctl --timeout 30 pair "$mac" 2>&1 | tail -6
+    /usr/local/bin/bluetoothctl --timeout 8 trust "$mac" 2>&1 | tail -2
+    ;;
+  connect)
+    mac="$2"
+    [ -n "$mac" ] || { echo "usage: j716f-bt connect <MAC>"; exit 1; }
+    /usr/local/bin/bluetoothctl --timeout 30 connect "$mac" 2>&1 | tail -5
+    ;;
+  status)
+    systemctl is-active j716f-bluez572.service 2>/dev/null
+    /usr/local/bin/bluetoothctl --timeout 5 show 2>/dev/null | grep -E 'Powered|Discovering'
+    /usr/local/bin/bluetoothctl --timeout 5 devices 2>/dev/null | head -12
+    ;;
+  *)
+    echo "usage: j716f-bt {on|off|discover|pair <MAC>|connect <MAC>|status}"
+    ;;
+esac

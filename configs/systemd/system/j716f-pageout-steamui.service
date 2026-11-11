@@ -1,0 +1,7 @@
+[Unit]
+Description=Page out idle Steam UI pages to zram while a game runs
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-pageout-steamui

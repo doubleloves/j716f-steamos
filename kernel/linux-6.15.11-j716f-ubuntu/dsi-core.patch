@@ -1,0 +1,613 @@
+﻿diff --git a/drivers/gpu/drm/msm/dsi/dsi_host.c b/drivers/gpu/drm/msm/dsi/dsi_host.c
+--- a/drivers/gpu/drm/msm/dsi/dsi_host.c
++++ b/drivers/gpu/drm/msm/dsi/dsi_host.c
+@@ -5,6 +5,7 @@
+ 
+ #include <linux/clk.h>
+ #include <linux/delay.h>
++#include <linux/debugfs.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/err.h>
+ #include <linux/interrupt.h>
+@@ -109,6 +110,7 @@
+ 
+ 	void __iomem *ctrl_base;
+ 	phys_addr_t ctrl_size;
++
+ 	struct regulator_bulk_data *supplies;
+ 
+ 	int num_bus_clks;
+@@ -340,6 +342,7 @@
+ 
+ int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
+ {
++	unsigned long actual_rate;
+ 	int ret;
+ 
+ 	DBG("Set clk rates: pclk=%lu, byteclk=%lu",
+@@ -365,6 +368,27 @@
+ 			       __func__, ret);
+ 			return ret;
+ 		}
++	}
++
++	/*
++	 * Reuse the rates actually implemented by the clock tree. In particular,
++	 * the 7nm PHY's round_rate() can return the ideal request unchanged even
++	 * though recalc_rate() truncates the fractional PLL result. Reissuing
++	 * that ideal byte rate on every DCS command then reprograms the shared
++	 * PLL during scanout (e.g. 150037875 requested vs 150037866 implemented).
++	 * Readback makes subsequent rate requests idempotent without bypassing
++	 * the OPP vote above, which must still be restored for every transfer.
++	 */
++	actual_rate = clk_get_rate(msm_host->byte_clk);
++	if (actual_rate)
++		msm_host->byte_clk_rate = actual_rate;
++	actual_rate = clk_get_rate(msm_host->pixel_clk);
++	if (actual_rate)
++		msm_host->pixel_clk_rate = actual_rate;
++	if (msm_host->byte_intf_clk) {
++		actual_rate = clk_get_rate(msm_host->byte_intf_clk);
++		if (actual_rate)
++			msm_host->byte_intf_clk_rate = actual_rate;
+ 	}
+ 
+ 	return 0;
+@@ -830,6 +854,7 @@
+ 
+ 	dsi_write(msm_host, REG_DSI_CTRL, data);
+ 
++
+ 	if (msm_host->cphy_mode)
+ 		dsi_write(msm_host, REG_DSI_CPHY_MODE_CTRL, BIT(0));
+ }
+@@ -981,6 +1006,7 @@
+ 		if (msm_host->dsc)
+ 			dsi_update_dsc_timing(msm_host, false);
+ 
++
+ 		dsi_write(msm_host, REG_DSI_ACTIVE_H,
+ 			DSI_ACTIVE_H_START(ha_start) |
+ 			DSI_ACTIVE_H_END(ha_end));
+@@ -1031,8 +1057,29 @@
+ static void dsi_sw_reset(struct msm_dsi_host *msm_host)
+ {
+ 	u32 ctrl;
++	bool reenable;
+ 
+ 	ctrl = dsi_read(msm_host, REG_DSI_CTRL);
++
++	/*
++	 * The controller must be re-enabled after the reset whenever the driver
++	 * still considers it logically on. Deciding that from the CTRL readback
++	 * alone is not enough: a reset entered while CTRL already reads 0 leaves
++	 * the controller permanently disabled, because both the disable and the
++	 * restore below are skipped.
++	 *
++	 * That is exactly what happens on the Lenovo TB-J716F: the slave DSI
++	 * link raises MDP_FIFO_UNDERFLOW, dsi_err_worker() resets it, and the
++	 * link never comes back -- the right half of the 2560x1600 panel stays
++	 * black while the master link keeps streaming (verified by reading the
++	 * registers back: master CTRL=0x000001f3, slave CTRL=0x00000000 with
++	 * mdp_fifo_underflow=1).
++	 *
++	 * So combine the readback with msm_host->enabled, and remember whether
++	 * we disabled it ourselves so the restore always pairs with the
++	 * disable.
++	 */
++	reenable = !!(ctrl & DSI_CTRL_ENABLE) || msm_host->enabled;
+ 
+ 	if (ctrl & DSI_CTRL_ENABLE) {
+ 		dsi_write(msm_host, REG_DSI_CTRL, ctrl & ~DSI_CTRL_ENABLE);
+@@ -1052,10 +1099,24 @@
+ 	dsi_write(msm_host, REG_DSI_RESET, 0);
+ 	wmb(); /* controller out of reset */
+ 
+-	if (ctrl & DSI_CTRL_ENABLE) {
+-		dsi_write(msm_host, REG_DSI_CTRL, ctrl);
++	if (reenable) {
++		u32 restore = ctrl;
++
++		/*
++		 * If CTRL read 0 on entry (the failure case), rebuild the
++		 * enable state from the driver's own configuration instead of
++		 * restoring a stale zero.
++		 */
++		if (!(restore & DSI_CTRL_ENABLE)) {
++			restore = DSI_CTRL_ENABLE | DSI_CTRL_CLK_EN;
++			restore |= ((DSI_CTRL_LANE0 << msm_host->lanes) -
++				    DSI_CTRL_LANE0);
++		}
++
++		dsi_write(msm_host, REG_DSI_CTRL, restore);
+ 		wmb();	/* make sure dsi controller enabled again */
+ 	}
++
+ }
+ 
+ static void dsi_op_mode_config(struct msm_dsi_host *msm_host,
+@@ -1473,8 +1534,29 @@
+ 	u32 status = msm_host->err_work_state;
+ 
+ 	pr_err_ratelimited("%s: status=%x\n", __func__, status);
+-	if (status & DSI_ERR_STATE_MDP_FIFO_UNDERFLOW)
++	if (status & DSI_ERR_STATE_MDP_FIFO_UNDERFLOW) {
++		u32 ctrl;
++
+ 		dsi_sw_reset(msm_host);
++
++		/*
++		 * Safety net for the Lenovo TB-J716F: after recovering from an
++		 * underflow the controller must be running again, otherwise the
++		 * link is dead for the rest of the session (the panel half
++		 * driven by it stays black). dsi_sw_reset() restores the enable
++		 * state, but verify it here so a future regression cannot
++		 * silently leave the link off.
++		 */
++		ctrl = dsi_read(msm_host, REG_DSI_CTRL);
++		if (msm_host->enabled && !(ctrl & DSI_CTRL_ENABLE)) {
++			u32 restore = DSI_CTRL_ENABLE | DSI_CTRL_CLK_EN;
++
++			restore |= ((DSI_CTRL_LANE0 << msm_host->lanes) -
++				    DSI_CTRL_LANE0);
++			dsi_write(msm_host, REG_DSI_CTRL, restore);
++			wmb();
++		}
++	}
+ 
+ 	/* It is safe to clear here because error irq is disabled. */
+ 	msm_host->err_work_state = 0;
+@@ -1527,13 +1609,42 @@
+ 
+ static void dsi_fifo_status(struct msm_dsi_host *msm_host)
+ {
++	/*
++	 * Only the underflow/overflow bits are errors. DSI_FIFO_STATUS also
++	 * carries status bits that are set during normal operation -- notably
++	 * DLN0_LP_FIFO_EMPTY (0x1000) and DLN0_HS_FIFO_EMPTY (0x10000), which
++	 * simply report that the low-power / high-speed FIFOs are empty -- plus
++	 * the CMD_DMA watermark bits. Testing the whole register for non-zero
++	 * therefore reports a fault on a healthy link.
++	 *
++	 * That is exactly what happens on the Lenovo TB-J716F: the slave DSI
++	 * link reads back 0x00001010 (LP_FIFO_EMPTY set), this function flags
++	 * DSI_ERR_STATE_FIFO, dsi_err_worker() resets the controller, and the
++	 * error re-arms immediately -- an endless reset loop that leaves the
++	 * half of the panel behind the slave link flickering and then dark.
++	 *
++	 * Mask down to the real error bits.
++	 */
++	const u32 err_mask = DSI_FIFO_STATUS_VIDEO_MDP_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_VIDEO_MDP_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_CMD_MDP_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_CMD_DMA_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_DLN0_LP_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_DLN0_HS_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_DLN0_HS_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_DLN1_HS_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_DLN1_HS_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_DLN2_HS_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_DLN2_HS_FIFO_UNDERFLOW |
++			     DSI_FIFO_STATUS_DLN3_HS_FIFO_OVERFLOW |
++			     DSI_FIFO_STATUS_DLN3_HS_FIFO_UNDERFLOW;
+ 	u32 status;
+ 
+ 	status = dsi_read(msm_host, REG_DSI_FIFO_STATUS);
+ 
+-	/* fifo underflow, overflow */
+-	if (status) {
+-		dsi_write(msm_host, REG_DSI_FIFO_STATUS, status);
++	if (status & err_mask) {
++		/* clear the error bits that fired */
++		dsi_write(msm_host, REG_DSI_FIFO_STATUS, status & err_mask);
+ 		msm_host->err_work_state |= DSI_ERR_STATE_FIFO;
+ 		if (status & DSI_FIFO_STATUS_CMD_MDP_FIFO_UNDERFLOW)
+ 			msm_host->err_work_state |=
+@@ -2312,6 +2423,7 @@
+ {
+ 	struct msm_dsi_host *msm_host = to_msm_dsi_host(host);
+ 
++
+ 	dsi_op_mode_config(msm_host,
+ 		!!(msm_host->mode_flags & MIPI_DSI_MODE_VIDEO), true);
+ 
+@@ -2325,6 +2437,7 @@
+ 	 * }
+ 	 */
+ 	msm_host->enabled = true;
++
+ 	return 0;
+ }
+ 
+@@ -2403,6 +2516,7 @@
+ 			__func__, ret);
+ 		goto fail_disable_clk;
+ 	}
++
+ 
+ 	dsi_timing_setup(msm_host, is_bonded_dsi);
+ 	dsi_sw_reset(msm_host);
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy.c
+@@ -786,8 +786,22 @@
+ 	 * which will confuse clock driver and result in wrong output rate of
+ 	 * link clocks. Restore PLL status if its PLL is being used as clock
+ 	 * source.
++	 *
++	 * The bonded slave PHY must also have its state restored. Previously,
++	 * the slave was skipped under the assumption that it runs off the
++	 * master's PLL and has no post-dividers to restore. However, this
++	 * leaves the slave's CLK_CFG0 post-dividers at their reset values
++	 * while the master's are programmed, causing asymmetry:
++	 *
++	 *   dsi0 CLK_CFG0=0x61 -> bit_clk_div 1, pix_clk_div 6
++	 *   dsi1 CLK_CFG0=0xf1 -> bit_clk_div 1, pix_clk_div 15
++	 *
++	 * dsi_pll_7nm_vco_prepare() now starts the slave's own PLL as well,
++	 * so restoring its state here gives the two links matching post-dividers.
++	 * there), so restoring its state is consistent with that and gives the
++	 * two links matching post-dividers.
+ 	 */
+-	if (phy->usecase != MSM_DSI_PHY_SLAVE) {
++	{
+ 		ret = msm_dsi_phy_pll_restore_state(phy);
+ 		if (ret) {
+ 			DRM_DEV_ERROR(dev, "%s: failed to restore phy state, %d\n",
+
+diff --git a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+--- a/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
++++ b/drivers/gpu/drm/msm/dsi/phy/dsi_phy_7nm.c
+@@ -438,6 +438,33 @@
+ 
+ 	/* Start PLL */
+ 	writel(BIT(0), pll_7nm->phy->base + REG_DSI_7nm_PHY_CMN_PLL_CNTRL);
++
++	/*
++	 * Mirror the master's post-dividers onto the bonded slave.
++	 *
++	 * CLK_CFG0 holds bit_clk_div (bits 0-3) and pix_clk_div (bits 4-7).
++	 * It is written in exactly one place -- dsi_pll_cmn_clk_cfg0_write() --
++	 * which is only reachable from dsi_7nm_pll_restore_state(), and that
++	 * requires phy->state_saved, which save_pll_state() only sets for the
++	 * master PHY (dsi_mgr_bridge_post_disable()). On a fresh enable the
++	 * slave therefore keeps its reset dividers, so copy just the divider
++	 * fields across from the master.
++	 */
++	if (pll_7nm->slave) {
++		const u32 div_mask =
++			DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_3_0__MASK |
++			DSI_7nm_PHY_CMN_CLK_CFG0_DIV_CTRL_7_4__MASK;
++		void __iomem *mbase = pll_7nm->phy->base;
++		void __iomem *sbase = pll_7nm->slave->phy->base;
++		u32 m = readl(mbase + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
++		u32 s = readl(sbase + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
++
++		if ((m & div_mask) != (s & div_mask)) {
++			writel((s & ~div_mask) | (m & div_mask),
++			       sbase + REG_DSI_7nm_PHY_CMN_CLK_CFG0);
++			wmb();
++		}
++	}
+ 
+ 	/*
+ 	 * ensure all PLL configurations are written prior to checking
+
+diff --git a/drivers/gpu/drm/panel/panel-raydium-rm69380.c b/drivers/gpu/drm/panel/panel-raydium-rm69380.c
+--- a/drivers/gpu/drm/panel/panel-raydium-rm69380.c
++++ b/drivers/gpu/drm/panel/panel-raydium-rm69380.c
+@@ -25,6 +25,8 @@
+ 	struct mipi_dsi_device *dsi[2];
+ 	struct regulator_bulk_data supplies[2];
+ 	struct gpio_desc *reset_gpio;
++	/* Last brightness written; see rm69380_bl_get_brightness(). */
++	u16 brightness;
+ };
+ 
+ static inline
+@@ -43,49 +45,135 @@
+ 	msleep(30);
+ }
+ 
++/*
++ * Send one DCS command to *both* DSI links.
++ *
++ * This panel is dual-DSI: the RM69380 drives two 1280x1600 halves, each with
++ * its own DSI link. Both controllers must be initialised, otherwise the half
++ * attached to the un-initialised link never lights up. The generated driver
++ * only ever wrote to ctx->dsi[0], so dsi[1] was registered, attached and had
++ * its mode_flags tweaked -- but never received a single init command.
++ *
++ * Same approach as the mainline-verified dual-DSI panel driver
++ * (panel-novatek-nt36523.c: mipi_dsi_dual_dcs_write_seq()).
++ */
++#define rm69380_dual_write_seq(ctx0, ctx1, cmd, seq...)			\
++	do {								\
++		mipi_dsi_dcs_write_seq_multi(ctx0, cmd, seq);		\
++		if (ctx1)						\
++			mipi_dsi_dcs_write_seq_multi(ctx1, cmd, seq);	\
++	} while (0)
++
++#define rm69380_dual_tear_on(ctx0, ctx1, mode)				\
++	do {								\
++		mipi_dsi_dcs_set_tear_on_multi(ctx0, mode);		\
++		if (ctx1)						\
++			mipi_dsi_dcs_set_tear_on_multi(ctx1, mode);	\
++	} while (0)
++
++#define rm69380_dual_exit_sleep(ctx0, ctx1)				\
++	do {								\
++		mipi_dsi_dcs_exit_sleep_mode_multi(ctx0);		\
++		if (ctx1)						\
++			mipi_dsi_dcs_exit_sleep_mode_multi(ctx1);	\
++	} while (0)
++
++#define rm69380_dual_display_on(ctx0, ctx1)				\
++	do {								\
++		mipi_dsi_dcs_set_display_on_multi(ctx0);		\
++		if (ctx1)						\
++			mipi_dsi_dcs_set_display_on_multi(ctx1);	\
++	} while (0)
++
+ static int rm69380_on(struct rm69380_panel *ctx)
+ {
+ 	struct mipi_dsi_device *dsi = ctx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
++	/* second link; NULL when the panel is driven single-DSI */
++	struct mipi_dsi_multi_context dsi1_ctx = { .dsi = ctx->dsi[1] };
++	struct mipi_dsi_multi_context *c1 = ctx->dsi[1] ? &dsi1_ctx : NULL;
+ 
+ 	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+ 	if (ctx->dsi[1])
+ 		ctx->dsi[1]->mode_flags |= MIPI_DSI_MODE_LPM;
+ 
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfe, 0xd4);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x00, 0x80);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfe, 0xd0);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x48, 0x00);
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0xfe, 0xd4);
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0x00, 0x80);
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0xfe, 0xd0);
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0x48, 0x00);
++
++	/*
++	 * Page-0x26 settings. The vendor sends these to the PRIMARY link only;
++	 * its "second" panel node omits exactly this group and is otherwise
++	 * identical (verified by decoding both blobs from the device's dtbo).
++	 */
+ 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfe, 0x26);
+ 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x75, 0x3f);
+ 	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0x1d, 0x1a);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xfe, 0x00);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, MIPI_DCS_WRITE_CONTROL_DISPLAY, 0x28);
+-	mipi_dsi_dcs_write_seq_multi(&dsi_ctx, 0xc2, 0x08);
+-
+-	mipi_dsi_dcs_set_tear_on_multi(&dsi_ctx, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
+-	mipi_dsi_dcs_exit_sleep_mode_multi(&dsi_ctx);
++
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0xfe, 0x00);
++	rm69380_dual_write_seq(&dsi_ctx, c1, MIPI_DCS_WRITE_CONTROL_DISPLAY,
++			       0x28);
++	rm69380_dual_write_seq(&dsi_ctx, c1, 0xc2, 0x08);
++
++	rm69380_dual_tear_on(&dsi_ctx, c1, MIPI_DSI_DCS_TEAR_MODE_VBLANK);
++
++	/*
++	 * Set the initial brightness, as the vendor sequence does:
++	 *     39 01 00 00 00 00 03 51 07 ff
++	 * i.e. DCS 0x51 (set_display_brightness) with the 16-bit value 0x07ff
++	 * = 2047 = max. Written as a raw sequence because only the 8-bit
++	 * _multi helper exists (mipi_dsi_dcs_set_display_brightness_multi).
++	 *
++	 * The generated driver omitted this, and nothing else sets it either:
++	 * backlight_update_status() only runs on a sysfs write or on
++	 * register/resume, so the panel came up with its brightness register
++	 * at 0 and the AMOLED stayed black even though the DSI link was
++	 * streaming correctly. The mainline-verified SM8250 panel driver sets
++	 * an initial brightness in its enable path too
++	 * (panel-novatek-nt36523.c: mipi_dsi_dcs_set_display_brightness(dsi, 18)).
++	 */
++	rm69380_dual_write_seq(&dsi_ctx, c1, MIPI_DCS_SET_DISPLAY_BRIGHTNESS,
++			       0x07, 0xff);
++
++	rm69380_dual_exit_sleep(&dsi_ctx, c1);
+ 	mipi_dsi_msleep(&dsi_ctx, 20);
+-
+-	mipi_dsi_dcs_set_display_on_multi(&dsi_ctx);
++	if (c1)
++		mipi_dsi_msleep(c1, 20);
++
++	rm69380_dual_display_on(&dsi_ctx, c1);
+ 	mipi_dsi_msleep(&dsi_ctx, 36);
+-
+-	return dsi_ctx.accum_err;
++	if (c1)
++		mipi_dsi_msleep(c1, 36);
++
++	return dsi_ctx.accum_err ? dsi_ctx.accum_err : (c1 ? dsi1_ctx.accum_err : 0);
+ }
+ 
+ static void rm69380_off(struct rm69380_panel *ctx)
+ {
+ 	struct mipi_dsi_device *dsi = ctx->dsi[0];
+ 	struct mipi_dsi_multi_context dsi_ctx = { .dsi = dsi };
++	struct mipi_dsi_multi_context dsi1_ctx = { .dsi = ctx->dsi[1] };
++	struct mipi_dsi_multi_context *c1 = ctx->dsi[1] ? &dsi1_ctx : NULL;
+ 
+ 	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+ 	if (ctx->dsi[1])
+ 		ctx->dsi[1]->mode_flags &= ~MIPI_DSI_MODE_LPM;
+ 
++	/* both links must be taken down, mirroring rm69380_on() */
+ 	mipi_dsi_dcs_set_display_off_multi(&dsi_ctx);
++	if (c1)
++		mipi_dsi_dcs_set_display_off_multi(c1);
+ 	mipi_dsi_msleep(&dsi_ctx, 35);
++	if (c1)
++		mipi_dsi_msleep(c1, 35);
++
+ 	mipi_dsi_dcs_enter_sleep_mode_multi(&dsi_ctx);
++	if (c1)
++		mipi_dsi_dcs_enter_sleep_mode_multi(c1);
+ 	mipi_dsi_msleep(&dsi_ctx, 20);
++	if (c1)
++		mipi_dsi_msleep(c1, 20);
+ }
+ 
+ static int rm69380_prepare(struct drm_panel *panel)
+@@ -94,8 +182,11 @@
+ 	int ret;
+ 
+ 	ret = regulator_bulk_enable(ARRAY_SIZE(ctx->supplies), ctx->supplies);
+-	if (ret < 0)
++	if (ret < 0) {
++		dev_err(&ctx->dsi[0]->dev,
++			"failed to enable regulators: %d\n", ret);
+ 		return ret;
++	}
+ 
+ 	rm69380_reset(ctx);
+ 
+@@ -120,12 +211,34 @@
+ 	return 0;
+ }
+ 
++/*
++ * Dual-DSI timing. The panel is two 1280x1600 links driven as one 2560x1600
++ * surface, and msm halves the horizontal timings before programming each link
++ * (dsi_calc_pclk() -> pclk = htotal/2 * vtotal * fps for bonded DSI).
++ *
++ * The horizontal porches must therefore be expressed for the *full* width, i.e.
++ * doubled, so that the halving reproduces the panel's per-link values from the
++ * vendor DT (h-front-porch 32, h-pulse-width 12, h-back-porch 38):
++ *
++ *     htotal 2724 / 2 = 1362 = 1280 + 32 + 12 + 38   (vendor, per link)
++ *     pclk = 2724 * 1632 * 90 / 2 = 200.05 MHz       (vendor, per link)
++ *
++ * Using undoubled porches (htotal 2642) yields only 1321 per link and a
++ * 194.03 MHz pixel clock -- 3% low. Measured on the device, that is exactly
++ * what msm programmed ("dsi_calc_pclk pclk=194028000"), and the panel never
++ * locked: the DPU enabled its CRTC, the DSI PHY came up and the PLL locked,
++ * but no frames appeared. Note the vertical porches are NOT split, so they stay
++ * at the vendor values.
++ *
++ * This matches the convention used by the working dual-DSI reference
++ * (sm8250-xiaomi-elish: per-link mode with matching per-link porches).
++ */
+ static const struct drm_display_mode rm69380_mode = {
+-	.clock = (2560 + 32 + 12 + 38) * (1600 + 20 + 4 + 8) * 90 / 1000,
++	.clock = (2560 + 64 + 24 + 76) * (1600 + 20 + 4 + 8) * 90 / 1000,
+ 	.hdisplay = 2560,
+-	.hsync_start = 2560 + 32,
+-	.hsync_end = 2560 + 32 + 12,
+-	.htotal = 2560 + 32 + 12 + 38,
++	.hsync_start = 2560 + 64,
++	.hsync_end = 2560 + 64 + 24,
++	.htotal = 2560 + 64 + 24 + 76,
+ 	.vdisplay = 1600,
+ 	.vsync_start = 1600 + 20,
+ 	.vsync_end = 1600 + 20 + 4,
+@@ -150,16 +263,43 @@
+ static int rm69380_bl_update_status(struct backlight_device *bl)
+ {
+ 	struct mipi_dsi_device *dsi = bl_get_data(bl);
++	struct rm69380_panel *ctx = mipi_dsi_get_drvdata(dsi);
+ 	u16 brightness = backlight_get_brightness(bl);
+-	int ret;
+-
+-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+-
+-	ret = mipi_dsi_dcs_set_display_brightness_large(dsi, brightness);
++	unsigned long mode_flags[2];
++	int i, ret = 0;
++
++	if (!ctx)
++		return -ENODEV;
++
++	/*
++	 * In MSM bonded sync mode a command on DSI_0 returns success without
++	 * transmitting. DSI_1 triggers the same payload on both controllers,
++	 * so brightness must follow the dual-link initialization sequence.
++	 */
++	for (i = 0; i < ARRAY_SIZE(ctx->dsi); i++) {
++		if (!ctx->dsi[i])
++			continue;
++		mode_flags[i] = ctx->dsi[i]->mode_flags;
++		ctx->dsi[i]->mode_flags &= ~MIPI_DSI_MODE_LPM;
++	}
++
++	for (i = 0; i < ARRAY_SIZE(ctx->dsi); i++) {
++		if (!ctx->dsi[i])
++			continue;
++		ret = mipi_dsi_dcs_set_display_brightness_large(ctx->dsi[i],
++							 brightness);
++		if (ret < 0)
++			break;
++	}
++
++	/* Restore each link's previous transfer mode, including on failure. */
++	for (i = 0; i < ARRAY_SIZE(ctx->dsi); i++)
++		if (ctx->dsi[i])
++			ctx->dsi[i]->mode_flags = mode_flags[i];
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
++	ctx->brightness = brightness;
+ 
+ 	return 0;
+ }
+@@ -167,18 +307,20 @@
+ static int rm69380_bl_get_brightness(struct backlight_device *bl)
+ {
+ 	struct mipi_dsi_device *dsi = bl_get_data(bl);
+-	u16 brightness;
+-	int ret;
+-
+-	dsi->mode_flags &= ~MIPI_DSI_MODE_LPM;
+-
+-	ret = mipi_dsi_dcs_get_display_brightness_large(dsi, &brightness);
+-	if (ret < 0)
+-		return ret;
+-
+-	dsi->mode_flags |= MIPI_DSI_MODE_LPM;
+-
+-	return brightness;
++	struct rm69380_panel *ctx = mipi_dsi_get_drvdata(dsi);
++
++	/*
++	 * Return the cached value rather than issuing DCS 0x52.
++	 *
++	 * This panel does not answer get_display_brightness_large: every read
++	 * logs "msm_dsi_host_cmd_rx:Invalid response cmd" and fails, so
++	 * actual_brightness reads back as -ENODATA and GNOME hides the
++	 * brightness slider entirely.
++	 */
++	if (ctx)
++		return ctx->brightness;
++
++	return 0;
+ }
+ 
+ static const struct backlight_ops rm69380_bl_ops = {
+@@ -267,6 +409,18 @@
+ 
+ 		ctx->dsi[i]->lanes = 4;
+ 		ctx->dsi[i]->format = MIPI_DSI_FMT_RGB888;
++		/*
++		 * Command burst mode: MIPI_DSI_MODE_VIDEO_BURST |
++		 * MIPI_DSI_CLOCK_NON_CONTINUOUS (no MIPI_DSI_MODE_VIDEO).
++		 *
++		 * msm_dsi_is_cmd_mode() tests !(host_flags & MIPI_DSI_MODE_VIDEO),
++		 * so omitting MIPI_DSI_MODE_VIDEO selects dpu_encoder_phys_cmd,
++		 * which uses TE from gpio66 (wired to mdp_vsync in the DTS) to
++		 * pace kickoffs.
++		 *
++		 * This matches the upstream driver for lenovo,j716f-edo-rm69380
++		 * and the vendor DT's "dsi_cmd_mode" topology.
++		 */
+ 		ctx->dsi[i]->mode_flags = MIPI_DSI_MODE_VIDEO_BURST |
+ 					  MIPI_DSI_CLOCK_NON_CONTINUOUS;
+ 
+

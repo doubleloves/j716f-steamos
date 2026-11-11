@@ -1,0 +1,12 @@
+#!/bin/bash
+G=/sys/class/devfreq/3d00000.gpu
+[ -d "$G" ] || exit 0
+if pgrep -f 'reaper SteamLaunch AppId=' >/dev/null 2>&1; then
+  echo 670000000 > "$G/max_freq" 2>/dev/null || true
+  echo userspace > "$G/governor" 2>/dev/null || true
+  echo 670000000 > "$G/userspace/set_freq" 2>/dev/null || true
+else
+  echo simple_ondemand > "$G/governor" 2>/dev/null || true
+  echo 305000000 > "$G/min_freq" 2>/dev/null || true
+  echo 670000000 > "$G/max_freq" 2>/dev/null || true
+fi

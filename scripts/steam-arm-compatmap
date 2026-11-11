@@ -1,0 +1,7 @@
+#!/bin/sh
+# usage: steam-arm-compatmap <appid> <tool>   (tool: proton_11-arm64, proton-experimental-arm64, proton_11, proton_experimental, steamlinuxruntime for Linux build; --remove drops the entry; Steam ARM closed)
+[ $# -eq 2 ] || { echo "usage: steam-arm-compatmap <appid> <tool> | <appid> --remove" >&2; exit 2; }
+U=player; C=/home/j716f/.local/share/steam-arm/.local/share/Steam/config/config.vdf
+# root runs it as the game account, so config.vdf and its backup stay that account's files
+[ "$(id -u)" = 0 ] && exec runuser -u "$U" -- python3 /usr/local/lib/steam-arm-compatmap.py "$C" "$1" "$2"
+exec python3 /usr/local/lib/steam-arm-compatmap.py "$C" "$1" "$2"

@@ -1,0 +1,44 @@
+#!/bin/bash
+BASE=2841600
+BURST=3187200
+FLAG=/run/j716f-cpu7-burst.active
+COOLDOWN=/run/j716f-cpu7-burst.cooldown
+CPU=/sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
+CPU7T=/sys/class/thermal/thermal_zone10/temp
+GPUT=/sys/class/thermal/thermal_zone15/temp
+while true; do
+  game=0
+  pgrep -f 'reaper SteamLaunch AppId=' >/dev/null 2>&1 && game=1
+  t=$(cat "$CPU7T" 2>/dev/null || echo 0)
+  gt=$(cat "$GPUT" 2>/dev/null || echo 0)
+  now=$(date +%s)
+  if [ "$game" = "0" ]; then
+    [ -e "$FLAG" ] && rm -f "$FLAG"
+    echo "$BASE" > "$CPU" 2>/dev/null
+    sleep 1
+    continue
+  fi
+  if [ "$t" -ge 76000 ] || [ "$gt" -ge 70000 ]; then
+    [ -e "$FLAG" ] && rm -f "$FLAG"
+    echo "$BASE" > "$CPU" 2>/dev/null
+    echo "$now" > "$COOLDOWN" 2>/dev/null
+    sleep 1
+    continue
+  fi
+  if [ -e "$FLAG" ]; then
+    start=$(cat /run/j716f-cpu7-burst.start 2>/dev/null || echo 0)
+    if [ $((now - start)) -ge 10 ]; then
+      rm -f "$FLAG" /run/j716f-cpu7-burst.start
+      echo "$BASE" > "$CPU" 2>/dev/null
+      echo "$now" > "$COOLDOWN" 2>/dev/null
+    fi
+  else
+    last=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+    if [ $((now - last)) -ge 20 ] && [ "$t" -lt 72000 ]; then
+      echo "$BURST" > "$CPU" 2>/dev/null
+      echo "$now" > /run/j716f-cpu7-burst.start
+      touch "$FLAG"
+    fi
+  fi
+  sleep 1
+done

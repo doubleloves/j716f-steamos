@@ -1,0 +1,16 @@
+#!/bin/bash
+# Steam Game Mode via cage (kiosk Wayland) + nested gamescope + ARM64 Steam
+ARMHOME=/home/j716f/.local/share/steam-arm
+S=$ARMHOME/.local/share/Steam
+D=$S/steamrtarm64
+mkdir -p "$ARMHOME/.steam"
+ln -sfn "$S" "$ARMHOME/.steam/steam"
+ln -sfn "$S" "$ARMHOME/.steam/root"
+export HOME="$ARMHOME"
+export LANG=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1001}"
+export STEAMOS=1
+export LD_LIBRARY_PATH="/usr/local/lib/steam-compat:$D:${LD_LIBRARY_PATH:-}"
+cd "$D" || exit 1
+exec cage -- gamescope -W 2560 -H 1600 -r 60 -- "$D/steam" -gamepadui -steamos3

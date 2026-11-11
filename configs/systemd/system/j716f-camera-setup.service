@@ -1,0 +1,17 @@
+[Unit]
+Description=J716F rear+front camera media pipeline setup
+After=systemd-modules-load.service
+Wants=systemd-modules-load.service
+Before=j716f-camera-daemon.service j716f-front-camera-daemon.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/home/j716f/tools/camera-setup-all.sh
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

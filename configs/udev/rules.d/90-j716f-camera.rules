@@ -1,0 +1,1 @@
+SUBSYSTEM=="video4linux", KERNEL=="video42", ATTR{name}=="J716F OV13B10", MODE="0660", GROUP="video"

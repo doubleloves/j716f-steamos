@@ -1,0 +1,80 @@
+#!/usr/bin/env python3
+"""steam-arm-icon STEAMDIR HICOLORDIR: write steam-arm.png and steam-arm-desktop.png.
+
+Steam's round icon redrawn on a dark, grainy green disc with a few small squares of vivid
+colour, generated from fixed seeds so every install draws the same icons. The logo tells the
+entries apart: chartreuse for Big Picture (steam-arm), bone for desktop mode
+(steam-arm-desktop). The logo shape comes from the client's own steam_tray.ico, where it is
+white with graded transparency over a blue disc; whiteness picks the logo, and the disc is
+made opaque. Before the client's first start there is no logo source: disc alone is drawn and
+HICOLORDIR/.steam-arm-placeholder marks it, so the launcher redraws it once the client is in.
+Nothing is bundled with the package."""
+import math, os, subprocess, sys
+from PIL import Image
+steam, dest = sys.argv[1], sys.argv[2]
+src = None
+for c in (os.path.join(steam, "public/steam_tray.ico"),
+          "/opt/fex-rootfs/Ubuntu_24_04/usr/share/icons/hicolor/256x256/apps/steam.png"):
+    if os.path.isfile(c):
+        src = c; break
+if src:
+    im = Image.open(src)
+    if src.endswith(".ico"):
+        im.size = max(im.info.get("sizes", {im.size}))
+    im = im.convert("RGBA").resize((256, 256), Image.LANCZOS)
+else:
+    im = Image.new("RGBA", (256, 256))
+p = im.load(); W, H = im.size; CX = CY = 127.5; R = 126.5
+
+def h(x, y, seed):
+    v = (x * 374761393 + y * 668265263 + seed * 2246822519) & 0xFFFFFFFF
+    v = ((v ^ (v >> 13)) * 1274126177) & 0xFFFFFFFF
+    return ((v ^ (v >> 16)) & 0xFFFF) / 65535.0
+
+def vnoise(x, y, cell, seed):
+    gx, gy = x / cell, y / cell; x0, y0 = int(gx), int(gy); fx, fy = gx - x0, gy - y0
+    fx, fy = fx * fx * (3 - 2 * fx), fy * fy * (3 - 2 * fy)
+    a, b = h(x0, y0, seed), h(x0 + 1, y0, seed); c, d = h(x0, y0 + 1, seed), h(x0 + 1, y0 + 1, seed)
+    top = a + (b - a) * fx
+    return top + ((c + (d - c) * fx) - top) * fy
+
+DARK, MID, LIGHT = (14, 24, 12), (30, 48, 24), (58, 82, 40)
+POPS = ((0, 229, 255), (234, 255, 0), (255, 106, 0), (180, 92, 255))
+
+def disc(x, y, seed):
+    g = 0.55 * vnoise(x, y, 40, seed) + 0.30 * vnoise(x, y, 11, seed + 1) + 0.15 * h(x, y, seed + 2)
+    col = [DARK[i] + (MID[i] - DARK[i]) * min(1, g * 1.4) for i in range(3)]
+    s = h(x // 3, y // 3, seed + 3)
+    if s > 0.93:
+        col = [LIGHT[i] * (0.7 + 0.3 * h(x, y, 9)) for i in range(3)]
+    elif s < 0.05:
+        col = [c * 0.45 for c in col]
+    cx, cy = x // 9, y // 9
+    if h(cx, cy, seed + 4) > 0.975 and 1 <= x % 9 <= 6 and 1 <= y % 9 <= 6:
+        col = list(POPS[int(h(cx, cy, seed + 5) * len(POPS)) % len(POPS)])
+    return col
+
+def draw(logo, seed):
+    out = Image.new("RGBA", im.size); o = out.load()
+    for y in range(H):
+        for x in range(W):
+            r_, g_, b_, a = p[x, y]
+            t = min(1.0, max(0.0, (min(r_, g_, b_) - 120) / 135)); t = t * t * (3 - 2 * t)
+            if math.hypot(x + .5 - CX, y + .5 - CY) < R - 1.5:
+                a = 255
+            bk = disc(x, y, seed)
+            o[x, y] = tuple(int(bk[i] + (logo[i] - bk[i]) * t) for i in range(3)) + (a,)
+    return out
+
+for name, img in (("steam-arm", draw((156, 200, 101), 11)), ("steam-arm-desktop", draw((196, 186, 160), 23))):
+    for sz in (16, 32, 48, 64, 128, 256):
+        d = os.path.join(dest, "%dx%d" % (sz, sz), "apps"); os.makedirs(d, exist_ok=True)
+        img.resize((sz, sz), Image.LANCZOS).save(os.path.join(d, name + ".png"))
+mark = os.path.join(dest, ".steam-arm-placeholder")
+if src:
+    if os.path.lexists(mark):
+        os.remove(mark)
+else:
+    open(mark, "w").close()
+if os.path.isfile(os.path.join(dest, "index.theme")):
+    subprocess.run(["gtk-update-icon-cache", "-q", "-f", "-t", dest], stderr=subprocess.DEVNULL)

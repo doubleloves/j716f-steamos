@@ -1,0 +1,52 @@
+#!/bin/bash
+CONF=/etc/j716f/gamemode.conf
+restart_gm() {
+  rm -f /tmp/j716f-gamemode.log
+  pkill -9 -f gamescope 2>/dev/null
+  pkill -9 -f 'steam' 2>/dev/null
+  sleep 3
+  mkdir -p /run/user/1001
+  chown player:player /run/user/1001 2>/dev/null
+  chmod 700 /run/user/1001
+  if [ "$(id -u)" = "0" ]; then
+    setsid nohup runuser -u player -- env XDG_RUNTIME_DIR=/run/user/1001 /usr/local/bin/j716f-start-gamemode >/tmp/j716f-gamemode-restart.log 2>&1 </dev/null &
+  else
+    setsid nohup env XDG_RUNTIME_DIR=/run/user/1001 /usr/local/bin/j716f-start-gamemode >/tmp/j716f-gamemode-restart.log 2>&1 </dev/null &
+  fi
+  sleep 20
+  echo "gamescope=$(pgrep -c gamescope) mangoapp=$(pgrep -c mangoapp)"
+}
+case "${1:-status}" in
+  fsr)
+    v="${2:-on}"
+    case "$v" in
+      on|fsr) val=fsr ;;
+      nis) val=nis ;;
+      off) val=off ;;
+      *) echo "usage: j716f-display fsr on|nis|off"; exit 1 ;;
+    esac
+    sed -i "s/^J716F_FSR=.*/J716F_FSR=$val/" "$CONF"
+    echo "J716F_FSR=$val"; restart_gm ;;
+  fpslimit)
+    v="${2:-60}"
+    case "$v" in
+      off|0) sed -i 's/^J716F_FPS_LIMIT=.*/J716F_FPS_LIMIT=0/' "$CONF" ;;
+      *) sed -i "s/^J716F_FPS_LIMIT=.*/J716F_FPS_LIMIT=$v/" "$CONF" ;;
+    esac
+    echo "J716F_FPS_LIMIT=$(grep FPS_LIMIT "$CONF")"; restart_gm ;;
+  internal)
+    v="${2:-1280x800}"
+    w="${v%x*}"; h="${v#*x}"
+    sed -i "s/^J716F_INTERNAL_W=.*/J716F_INTERNAL_W=$w/; s/^J716F_INTERNAL_H=.*/J716F_INTERNAL_H=$h/" "$CONF"
+    echo "internal=${w}x${h}"; restart_gm ;;
+  restart)
+    restart_gm ;;
+  status)
+    cat "$CONF"
+    echo "gamescope args:"
+    ps -o args= -C gamescope 2>/dev/null | head -1
+    ;;
+  *)
+    echo "usage: j716f-display fsr on|nis|off | fpslimit N|off | internal WxH | restart | status"
+    exit 1 ;;
+esac

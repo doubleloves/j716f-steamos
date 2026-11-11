@@ -1,0 +1,40 @@
+#!/bin/bash
+# Steam Game Mode session: gamescope DRM + Steam Big Picture (ARM64 client)
+# - LD_PRELOAD shim: forces 8-bit + linear scanout (dual-DSI panel can't do XR30/AFBC)
+# - Uses the normal "performance" profile (schedutil, max 2.84GHz, GPU 305-587MHz).
+#   Do NOT auto-pin CPU/GPU here: 2026-11-07 overnight boost run hard-reset the tablet.
+#   For a temporary boost during a play session: sudo j716f-gameboost on ... off
+ARMHOME=/home/j716f/.local/share/steam-arm
+S=$ARMHOME/.local/share/Steam
+D=$S/steamrtarm64
+
+mkdir -p "$ARMHOME/.steam"
+ln -sfn "$S" "$ARMHOME/.steam/steam"
+ln -sfn "$S" "$ARMHOME/.steam/root"
+[ -d "$S/linux32" ] && ln -sfn "$S/linux32" "$ARMHOME/.steam/sdk32"
+[ -d "$S/linux64" ] && ln -sfn "$S/linux64" "$ARMHOME/.steam/sdk64"
+for _d in "$D/linuxarm64" "$S/linuxarm64"; do [ -d "$_d" ] && { ln -sfn "$_d" "$ARMHOME/.steam/sdkarm64"; break; }; done
+[ -d "$S/ubuntu12_32" ] && ln -sfn "$S/ubuntu12_32" "$ARMHOME/.steam/bin32"
+[ -d "$S/ubuntu12_64" ] && ln -sfn "$S/ubuntu12_64" "$ARMHOME/.steam/bin64"
+
+export HOME="$ARMHOME"
+export LANG=zh_CN.UTF-8
+export LC_ALL=zh_CN.UTF-8
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/1001}"
+export STEAMOS=1
+export LD_LIBRARY_PATH="/usr/local/lib/steam-compat:$D:${LD_LIBRARY_PATH:-}"
+export LD_PRELOAD="/usr/local/lib/libj716f-no10bit.so${LD_PRELOAD:+:$LD_PRELOAD}"
+cd "$D" || exit 1
+
+# optional display features (configure with j716f-display)
+[ -f /etc/j716f/gamemode.conf ] && . /etc/j716f/gamemode.conf
+GS_ARGS=(-W 2560 -H 1600 -r 60)
+case "${J716F_FSR:-off}" in
+  fsr|nis)
+    GS_ARGS+=(-F "$J716F_FSR" -w "${J716F_INTERNAL_W:-1280}" -h "${J716F_INTERNAL_H:-800}")
+    ;;
+esac
+if [ "${J716F_FPS_LIMIT:-0}" -gt 0 ] 2>/dev/null; then
+  GS_ARGS+=(--framerate-limit "$J716F_FPS_LIMIT")
+fi
+exec gamescope "${GS_ARGS[@]}" --backend drm -- "$D/steam" -gamepadui -cef-force-gpu -cef-disable-gpu-sandbox -steamos3 -language schinese

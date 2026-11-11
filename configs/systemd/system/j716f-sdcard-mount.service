@@ -1,0 +1,11 @@
+[Unit]
+Description=Mount J716F SD card if present (/mnt/sdcard)
+After=local-fs.target
+Before=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/j716f-sdcard-mount add
+ExecStop=/usr/local/bin/j716f-sdcard-mount remove
+[Install]
+WantedBy=multi-user.target

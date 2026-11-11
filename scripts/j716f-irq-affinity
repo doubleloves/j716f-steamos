@@ -1,0 +1,6 @@
+#!/bin/bash
+# Route interrupt affinity to the A55 cluster (CPU0-3).
+for f in /proc/irq/[0-9]*/smp_affinity_list; do
+  [ -w "$f" ] || continue
+  echo 0-3 > "$f" 2>/dev/null || true
+done

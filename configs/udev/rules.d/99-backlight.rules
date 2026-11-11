@@ -1,0 +1,3 @@
+# Allow video group to control backlight brightness
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/sh -c 'chgrp video /sys/class/backlight/%k/brightness; chmod 0664 /sys/class/backlight/%k/brightness'"
+SUBSYSTEM=="backlight", ACTION=="change", RUN+="/bin/sh -c 'chgrp video /sys/class/backlight/%k/brightness; chmod 0664 /sys/class/backlight/%k/brightness'"

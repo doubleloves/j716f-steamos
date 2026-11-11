@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Pin the Remote Play client settings the native ARM64 Steam client needs on this system.
+
+The client stores its Remote Play settings as a serialized protobuf (CStreamingClientConfig
+from steammessages_remoteplay.proto), hex-encoded under "ClientConfig" in the account's
+localconfig.vdf. Two of its fields default to values this system cannot honour:
+
+  enable_hardware_decoding (field 7) defaults to true. The x86-64 streaming client running
+  under FEX reaches no host video decoder, so it advertises
+  a decoder it does not have and the session never leaves negotiation. Titles with a light
+  stream can still come up; heavier ones sit on the launch screen.
+  enable_video_hevc (field 13) defaults to false, and is pinned false so the host keeps to
+  H.264, which the software decoder handles.
+
+This tool inserts both fields, set to false, when they are absent, and leaves every other
+byte of the message untouched. A signed-in account that has not streamed yet has no
+"ClientConfig" entry at all (the client writes one after its first session); the tool then
+creates the entry, inside the existing "streaming_v2" block or in a new one, so the first
+stream already runs with the pinned values. It refuses to run while the client is up,
+because the client writes its own copy of the file back on exit. Run without arguments to
+apply; --check only reports. Exit status 0 when the settings are in place, 1 when they
+could not be applied.
+"""
+import glob
+import os
+import pwd
+import re
+import sys
+
+USAGE = """Usage: steam-arm-remoteplay [--check]
+
+Pins Remote Play settings of native ARM64 client in each localconfig.vdf of client
+home: hardware decoding off, HEVC off. Launcher runs it before each client start.
+
+  (none)       apply; refuses while client runs
+  --check      report only, change nothing
+  -h, --help   print this text and exit
+
+Client home, resolved as launcher does: STEAM_ARM_HOME, else ARMHOME_DIR from
+/etc/steam-arm/steam-arm.conf under account home (default .local/share/steam-arm).
+Exit status 0 when settings are in place, 1 otherwise."""
+CONF_PATH = "/etc/steam-arm/steam-arm.conf"
+ARMHOME_DIR = ".local/share/steam-arm"
+HOME_VAR = "STEAM_ARM_HOME"
+
+# Field numbers are from the schema embedded in the client; wire type 0 (varint) for bool.
+FIELD_HW_DECODE = 7
+FIELD_HEVC = 13
+KEY_RE = re.compile(r'("ClientConfig"\t\t")([0-9a-f]*)(")')
+# streaming_v2 block: closing brace is the first "\t}" line after the opening "\t{".
+BLOCK_RE = re.compile(r'\n\t"streaming_v2"\n\t\{\n(?:.*\n)*?\t\}\n')
+ROOT_RE = re.compile(r'\A"UserLocalConfigStore"\n\{\n')
+ENABLE_RE = re.compile(r'\n\t\t"EnableStreaming"\t\t"')
+
+
+def read_varint(b, i):
+    val, shift = 0, 0
+    while True:
+        c = b[i]
+        val |= (c & 0x7F) << shift
+        i += 1
+        if not c & 0x80:
+            return val, i
+        shift += 7
+
+
+def split_fields(b):
+    """Yield (field_number, raw_bytes_of_tag_and_value) for a wire-format message."""
+    i = 0
+    while i < len(b):
+        start = i
+        tag, i = read_varint(b, i)
+        num, wt = tag >> 3, tag & 7
+        if wt == 0:
+            _, i = read_varint(b, i)
+        elif wt == 1:
+            i += 8
+        elif wt == 2:
+            ln, i = read_varint(b, i)
+            i += ln
+        elif wt == 5:
+            i += 4
+        else:
+            raise ValueError("unsupported wire type %d at byte %d" % (wt, start))
+        yield num, b[start:i]
+
+
+def pinned(blob):
+    """Return the message with both fields present as false, in ascending field order."""
+    fields = list(split_fields(blob))
+    present = {n for n, _ in fields}
+    for num in (FIELD_HW_DECODE, FIELD_HEVC):
+        if num not in present:
+            fields.append((num, bytes([num << 3, 0])))
+    fields.sort(key=lambda f: f[0])
+    return b"".join(raw for _, raw in fields)
+
+
+def with_entry(text):
+    """The file text with a "ClientConfig" entry holding only the two pinned fields: added
+    to the streaming_v2 block when the block exists, otherwise in a new block right after
+    the root object opens. The entry goes first in the block, ahead of "EnableStreaming" "1",
+    which is the layout the client itself writes; the EnableStreaming key is added after the
+    entry when it is missing. Returns None when the file is not laid out as expected."""
+    line = '\t\t"ClientConfig"\t\t"%s"\n' % pinned(b"").hex()
+    enable = '\t\t"EnableStreaming"\t\t"1"\n'
+    m = BLOCK_RE.search(text)
+    if m:
+        block = m.group(0)
+        head = '\n\t"streaming_v2"\n\t{\n'
+        assert block.startswith(head)
+        add = line + ("" if ENABLE_RE.search(block) else enable)
+        return text[:m.start()] + head + add + block[len(head):] + text[m.end():]
+    m = ROOT_RE.match(text)
+    if not m:
+        return None
+    return text[:m.end()] + '\t"streaming_v2"\n\t{\n' + line + enable + "\t}\n" + text[m.end():]
+
+
+def client_running():
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                with open("/proc/%s/comm" % pid) as fh:
+                    if fh.read().strip() == "steam":
+                        return True
+            except OSError:
+                pass
+    return False
+
+
+def write_back(path, text):
+    tmp = path + ".steam-arm-tmp"
+    with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def client_home():
+    """Client home as launcher resolves it: STEAM_ARM_HOME (settings file over environment), else
+    ARMHOME_DIR under account home. Account home comes from password database, because
+    launcher runs this tool with HOME already set to client home."""
+    conf = {}
+    try:
+        with open(CONF_PATH) as fh:
+            for line in fh:
+                key, sep, value = line.strip().partition("=")
+                if sep and not key.startswith("#"):
+                    conf[key.strip()] = value.strip().strip('"').strip("'")
+    except OSError:
+        pass
+    override = conf.get(HOME_VAR) or os.environ.get(HOME_VAR)
+    if override:
+        return override
+    return os.path.join(pwd.getpwuid(os.getuid()).pw_dir, conf.get("ARMHOME_DIR") or ARMHOME_DIR)
+
+
+def main():
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print(USAGE)
+        return 0
+    check = "--check" in sys.argv[1:]
+    steam = os.path.join(client_home(), ".local/share/Steam")
+    files = glob.glob(os.path.join(steam, "userdata/*/config/localconfig.vdf"))
+    if not files:
+        print("steam-arm-remoteplay: no localconfig.vdf under %s yet; sign in to client once first" % steam)
+        return 1
+    status = 0
+    for path in files:
+        text = open(path, encoding="utf-8", errors="surrogateescape").read()
+        m = KEY_RE.search(text)
+        if not m:
+            new_text = with_entry(text)
+            if new_text is None:
+                print("%s: no ClientConfig entry and no place to add one (unexpected layout)" % path)
+                status = 1
+                continue
+            if check:
+                print("%s: not pinned (would create the ClientConfig entry)" % path)
+                status = 1
+                continue
+            if client_running():
+                print("steam-arm-remoteplay: the client is running; close it first, it rewrites this file on exit")
+                return 1
+            # Verify before writing: exactly one entry with the pinned message, and every original line intact.
+            found = KEY_RE.findall(new_text)
+            assert len(found) == 1 and bytes.fromhex(found[0][1]) == pinned(b"")
+            assert all(l in new_text.splitlines() for l in text.splitlines())
+            assert len(ENABLE_RE.findall(new_text)) == 1
+            write_back(path, new_text)
+            print("%s: ClientConfig entry created, pinned (hardware decoding off, HEVC off)" % path)
+            continue
+        old = bytes.fromhex(m.group(2))
+        new = pinned(old)
+        if new == old:
+            print("%s: already pinned" % path)
+            continue
+        if check:
+            print("%s: not pinned (would insert fields 7 and 13)" % path)
+            status = 1
+            continue
+        if client_running():
+            print("steam-arm-remoteplay: the client is running; close it first, it rewrites this file on exit")
+            return 1
+        # prove the edit before writing it: parsing the result must give the same fields plus two
+        assert dict(split_fields(new)).keys() == dict(split_fields(old)).keys() | {FIELD_HW_DECODE, FIELD_HEVC}
+        write_back(path, text[:m.start(2)] + new.hex() + text[m.end(2):])
+        print("%s: pinned (hardware decoding off, HEVC off)" % path)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

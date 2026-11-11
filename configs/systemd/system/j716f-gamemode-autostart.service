@@ -1,0 +1,19 @@
+[Unit]
+Description=J716F Steam Game Mode autostart
+After=seatd.service systemd-user-sessions.service network-online.target
+Wants=seatd.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/mkdir -p /run/user/1001
+ExecStartPre=/bin/chown player:player /run/user/1001
+ExecStartPre=/bin/chmod 700 /run/user/1001
+ExecStartPre=-/usr/bin/pkill -9 agetty
+ExecStartPre=-/usr/bin/rfkill unblock bluetooth
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/bin/runuser -u player -- /usr/bin/env XDG_RUNTIME_DIR=/run/user/1001 /usr/local/bin/j716f-start-gamemode
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,33 @@
+#!/bin/bash
+# J716F charge guard: emulate Android charge termination / recharge and stop charging during games.
+CHG=/sys/class/power_supply/pm8150b-charger
+BAT=/sys/class/power_supply/bq27541-0
+STOP_V=4400000      # 4.40 V stop
+RESUME_V=4150000    # 4.15 V resume
+STOP_T=400          # 40.0 C stop
+RESUME_T=380        # 38.0 C resume
+stopped=0
+log() { echo "j716f-charge-guard: $*"; }
+# initialize state from current value
+if [ "$(cat $CHG/charging_enabled 2>/dev/null)" = "0" ]; then stopped=1; fi
+while true; do
+  v=$(cat $BAT/voltage_now 2>/dev/null || echo 0)
+  cap=$(cat $BAT/capacity 2>/dev/null || echo 0)
+  t=$(cat $BAT/temp 2>/dev/null || echo 0)
+  game=0
+  pgrep -f 'reaper SteamLaunch AppId=' >/dev/null 2>&1 && game=1
+  if [ "$stopped" = "0" ]; then
+    if [ "$v" -ge "$STOP_V" ] || [ "$t" -ge "$STOP_T" ] || [ "$game" = "1" ] || [ "$cap" -ge 100 ]; then
+      echo 0 > $CHG/charging_enabled 2>/dev/null
+      stopped=1
+      log "stop charging: v=$v uV cap=$cap temp=$t game=$game"
+    fi
+  else
+    if [ "$v" -le "$RESUME_V" ] && [ "$t" -le "$RESUME_T" ] && [ "$game" = "0" ]; then
+      echo 1 > $CHG/charging_enabled 2>/dev/null
+      stopped=0
+      log "resume charging: v=$v uV cap=$cap temp=$t"
+    fi
+  fi
+  sleep 15
+done

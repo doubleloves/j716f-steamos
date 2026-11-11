@@ -1,0 +1,9 @@
+[Unit]
+Description=J716F disable deep idle and keep GPU powered
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-idle-fix.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

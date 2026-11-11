@@ -1,0 +1,9 @@
+[Unit]
+Description=J716F performance profile (CPU native max + stable GPU ceiling)
+After=multi-user.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/j716f-perf apply
+[Install]
+WantedBy=multi-user.target

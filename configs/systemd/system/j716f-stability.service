@@ -1,0 +1,9 @@
+[Unit]
+Description=J716F fixed frequency stability settings
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-stability.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

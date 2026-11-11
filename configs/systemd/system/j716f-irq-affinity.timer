@@ -1,0 +1,8 @@
+[Unit]
+Description=Maintain J716F IRQ affinity
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+Unit=j716f-irq-affinity.service
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,6 @@
+[Unit]
+Description=J716F IRQ affinity to A55
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-irq-affinity

@@ -1,0 +1,3 @@
+# SD card: mount on insert, unmount on removal (boot-time mount handled by the service)
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="mmcblk0p1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="j716f-sdcard-mount.service"
+ACTION=="remove", SUBSYSTEM=="block", KERNEL=="mmcblk0", RUN+="/usr/local/bin/j716f-sdcard-mount remove"

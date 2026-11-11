@@ -1,0 +1,57 @@
+#!/bin/bash
+# CPU layout + base frequency. CPU7 burst is controlled by j716f-cpu7-burst.
+BASE7=2841600
+BASE46=2419200
+BASE0=1804800
+BURST_FLAG=/run/j716f-cpu7-burst.active
+pin_one_cpus() {
+  local pid="$1" mask="$2"
+  [ -d "/proc/$pid" ] || return 0
+  for t in /proc/$pid/task/*; do
+    [ -d "$t" ] || continue
+    taskset -pc "$mask" "$(basename "$t")" >/dev/null 2>&1 || true
+  done
+}
+children_of() {
+  local pid="$1" c
+  for c in $(pgrep -P "$pid" 2>/dev/null); do echo "$c"; children_of "$c"; done
+}
+# base CPU caps; skip CPU7 while burst is active
+if [ ! -e "$BURST_FLAG" ]; then
+  echo "$BASE7" > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq 2>/dev/null || true
+fi
+echo "$BASE46" > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq 2>/dev/null || true
+echo "$BASE0" > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null || true
+for p in 0 4 7; do echo schedutil > /sys/devices/system/cpu/cpufreq/policy$p/scaling_governor 2>/dev/null || true; done
+# Steam UI -> A55 0-2
+for p in $(pgrep -f steamwebhelper 2>/dev/null); do pin_one_cpus "$p" 0-2; done
+# Background -> CPU3
+for n in bluetoothd NetworkManager pulseaudio wpa_supplicant; do
+  for p in $(pgrep -x "$n" 2>/dev/null); do pin_one_cpus "$p" 3; done
+done
+for p in $(pgrep -x sshd-session 2>/dev/null); do pin_one_cpus "$p" 3; done
+for p in $(pgrep -f 'j716f-charge-guard' 2>/dev/null); do pin_one_cpus "$p" 3; done
+# Game tree: helpers CPU4-6, main game process leader CPU7
+for r in $(pgrep -f 'reaper SteamLaunch AppId=' 2>/dev/null); do
+  main=""
+  maxrss=0
+  for p in $(children_of "$r"); do
+    pin_one_cpus "$p" 4-7
+    args=$(tr '\0' ' ' < /proc/$p/cmdline 2>/dev/null || true)
+    case "$args" in
+      *".exe"*|*".EXE"*)
+        case "$args" in
+          *reaper*|*proton*|*wine*|*python*|*steam.exe*|*winedevice*) ;;
+          *)
+            rss=$(awk '/VmRSS/{print $2}' /proc/$p/status 2>/dev/null || echo 0)
+            if [ "${rss:-0}" -gt "$maxrss" ]; then maxrss=$rss; main=$p; fi
+            ;;
+        esac
+        ;;
+    esac
+  done
+  if [ -n "$main" ]; then
+    # Only the process leader (main thread) stays on CPU7; other threads remain 4-6.
+    taskset -pc 7 "$main" >/dev/null 2>&1 || true
+  fi
+done

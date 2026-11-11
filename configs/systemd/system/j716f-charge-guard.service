@@ -1,0 +1,10 @@
+[Unit]
+Description=J716F charge guard (full-charge stop, recharge hysteresis, stop while gaming)
+After=multi-user.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/j716f-charge-guard
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

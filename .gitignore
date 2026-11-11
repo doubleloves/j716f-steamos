@@ -1,0 +1,29 @@
+# Git 忽略项
+# 发布镜像/备份等大文件不入库
+*.img
+*.gz
+*.simg
+*.zst
+*.xz
+*.zip
+*.7z
+*.tar
+*.tgz
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# 临时/备份
+*.bak
+*.bak-*
+*~
+.DS_Store
+Thumbs.db
+
+# 内核构建产物/源码树（用 patch+config，不入库）
+kernel/*/build/
+kernel/*/tree/
+*.tar.xz
+*.tar.gz

@@ -1,0 +1,19 @@
+[Unit]
+Description=Mark current Qualcomm A/B slot successful (J716F)
+# 每次启动把当前槽标记为 "boot successful"，ABL 就不再递减 retry count。
+# 详见 docs/83-ABL计数彻底解决.md
+ConditionPathExists=/usr/local/sbin/qbootctl
+ConditionPathExistsGlob=/dev/disk/by-partlabel/boot_*
+After=local-fs.target
+Before=shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/qbootctl -m
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

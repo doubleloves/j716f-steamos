@@ -1,0 +1,10 @@
+#!/bin/bash
+# 切换 开机进 Steam / 开机进桌面
+U=player; H=/home/$U
+if [ -f "$H/.config/steam-desktop-mode" ]; then
+  rm -f "$H/.config/steam-desktop-mode"
+  echo "已切换：开机进入 Steam Big Picture"
+else
+  touch "$H/.config/steam-desktop-mode"
+  echo "已切换：开机进入 XFCE 桌面"
+fi

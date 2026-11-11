@@ -1,0 +1,11 @@
+[Unit]
+Description=Maintain GPU performance mode during games
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5s
+AccuracySec=1s
+Unit=j716f-gpu-game-mode.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,28 @@
+[Unit]
+Description=J716F Game Mode (gamescope + Steam Big Picture, no tty1 getty)
+After=multi-user.target seatd.service sshd.service
+Wants=seatd.service
+# keep SSH available before Game Mode starts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=player
+Group=player
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+# give sshd/NetworkManager a moment first, then start the game session
+ExecStartPre=/bin/sleep 10
+ExecStart=/usr/local/bin/j716f-gamemode
+Restart=no
+TimeoutStopSec=15
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,7 @@
+[Unit]
+Description=Set GPU to 670MHz while a Steam game is running, auto otherwise
+After=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-gpu-game-mode

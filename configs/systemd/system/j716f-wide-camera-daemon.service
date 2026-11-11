@@ -1,0 +1,18 @@
+[Unit]
+Description=J716F GC5035 -> v4l2loopback wide camera daemon
+After=systemd-modules-load.service j716f-camera-setup.service
+Wants=systemd-modules-load.service
+Requires=j716f-camera-setup.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Environment=J716F_VFLIP=1
+Environment=J716F_HFLIP=0
+ExecStart=/usr/local/bin/j716f-wide-daemon
+Restart=on-failure
+RestartSec=2
+Nice=-5
+
+[Install]
+WantedBy=multi-user.target

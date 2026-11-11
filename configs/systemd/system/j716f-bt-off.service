@@ -1,0 +1,9 @@
+[Unit]
+Description=Keep J716F Bluetooth disabled (QCA6390 BT causes hard resets on connect)
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/rfkill block bluetooth
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

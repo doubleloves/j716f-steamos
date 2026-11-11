@@ -1,0 +1,4 @@
+# Xbox Wireless Controller over Bluetooth (uhid/hid-microsoft)
+KERNEL=="hidraw*", KERNELS=="*045E:0B13*", MODE="0660", GROUP="input", TAG+="uaccess"
+KERNEL=="hidraw*", KERNELS=="*045E:*", MODE="0660", GROUP="input", TAG+="uaccess"
+KERNEL=="js*", KERNELS=="*045E:*", MODE="0664", GROUP="input", TAG+="uaccess"

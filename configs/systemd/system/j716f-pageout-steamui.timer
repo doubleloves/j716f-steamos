@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodically page out Steam UI pages during games
+
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=j716f-pageout-steamui.service
+
+[Install]
+WantedBy=timers.target

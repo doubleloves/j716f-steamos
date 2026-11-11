@@ -1,0 +1,16 @@
+#!/bin/bash
+# 命令行亮度控制：brightness up|down|set N|max|min|show
+BL=/sys/class/backlight/ae94000.dsi.0/brightness
+MAX=2047
+STEP=${STEP:-150}
+cur() { cat "$BL"; }
+clamp() { local v=$1; [ "$v" -gt "$MAX" ] && v=$MAX; [ "$v" -lt 20 ] && v=20; echo "$v"; }
+case "${1:-show}" in
+  up)   n=$(clamp $(( $(cur) + STEP ))); echo "$n" > "$BL"; echo "亮度: $(( n * 100 / MAX ))% ($n)" ;;
+  down) n=$(clamp $(( $(cur) - STEP ))); echo "$n" > "$BL"; echo "亮度: $(( n * 100 / MAX ))% ($n)" ;;
+  set)  n=$(clamp "${2:-1000}"); echo "$n" > "$BL"; echo "亮度: $(( n * 100 / MAX ))% ($n)" ;;
+  max)  echo "$MAX" > "$BL"; echo "亮度: 100%" ;;
+  min)  echo 20 > "$BL"; echo "亮度: 1%" ;;
+  show) v=$(cur); echo "亮度: $(( v * 100 / MAX ))% ($v/$MAX)" ;;
+  *)    echo "用法: brightness [up|down|set N|max|min|show]"; exit 1 ;;
+esac

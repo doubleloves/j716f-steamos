@@ -1,0 +1,9 @@
+[Unit]
+Description=J716F pstore kmsg_bytes tune
+After=local-fs.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-pstore-tune.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

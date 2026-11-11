@@ -1,0 +1,13 @@
+[Unit]
+Description=J716F Bluetooth auto-reconnect loop
+After=bluetooth.target dbus.service j716f-bluez572.service
+Wants=j716f-bluez572.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/j716f-bt-reconnect
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

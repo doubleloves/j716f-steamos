@@ -1,0 +1,15 @@
+#!/bin/bash
+# Toggle the USB gadget (device mode: ACM serial + RNDIS network).
+# NOTE: with the gadget bound, plugging a PC USB-C cable to the tablet can trigger a
+#       hard reset (USB gadget enumeration / typec event). Default is OFF after boot;
+#       use "on" only when you really need the USB serial console/ADB.
+UDC=/sys/kernel/config/usb_gadget/g1/UDC
+case "${1:-status}" in
+  off) echo "" > "$UDC" 2>/dev/null || true; echo "gadget off" ;;
+  on)  echo a600000.usb > "$UDC" 2>/dev/null || true; echo "gadget on" ;;
+  status)
+    if [ -s "$UDC" ]; then echo "gadget bound: $(cat "$UDC")"; else echo "gadget unbound"; fi
+    ls /sys/class/udc/ 2>/dev/null
+    ;;
+  *) echo "usage: $0 on|off|status"; exit 1 ;;
+esac

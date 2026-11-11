@@ -1,0 +1,10 @@
+#!/bin/bash
+[ -d /run/user/1001 ] || { mkdir -p /run/user/1001; chown player:player /run/user/1001 2>/dev/null; chmod 700 /run/user/1001; }
+# Start Game Mode (gamescope + Steam Big Picture) in the background.
+# Intended to be run from an SSH session or the tty2 text console.
+# The SSH session stays usable after this returns.
+pkill -f 'gamescope|steamrtarm64/steam' 2>/dev/null || true
+sleep 2
+setsid nohup /usr/local/bin/j716f-gamemode >/tmp/j716f-gamemode.log 2>&1 < /dev/null &
+sleep 2
+echo "Game Mode starting; log: /tmp/j716f-gamemode.log"

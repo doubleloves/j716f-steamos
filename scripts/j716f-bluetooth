@@ -1,0 +1,22 @@
+#!/bin/bash
+# Toggle Bluetooth on this tablet. NOTE: BT on QCA6390 has caused hard resets;
+# default is OFF. Use "on" only for testing, then "off" again.
+case "${1:-status}" in
+  on)
+    systemctl unmask bluetooth.service 2>/dev/null
+    rfkill unblock bluetooth 2>/dev/null
+    systemctl start bluetooth.service 2>/dev/null
+    echo "bluetooth on"
+    ;;
+  off)
+    systemctl disable --now bluetooth.service 2>/dev/null
+    systemctl mask bluetooth.service 2>/dev/null
+    rfkill block bluetooth 2>/dev/null
+    echo "bluetooth off"
+    ;;
+  status)
+    echo "service: $(systemctl is-enabled bluetooth 2>/dev/null)/$(systemctl is-active bluetooth 2>/dev/null)"
+    rfkill list bluetooth 2>/dev/null
+    ;;
+  *) echo "usage: $0 on|off|status"; exit 1;;
+esac

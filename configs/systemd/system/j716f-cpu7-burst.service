@@ -1,0 +1,10 @@
+[Unit]
+Description=J716F CPU7 2.84GHz sustained + 3.2GHz short bursts
+After=multi-user.target
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/j716f-cpu7-burst
+Restart=always
+RestartSec=3
+[Install]
+WantedBy=multi-user.target

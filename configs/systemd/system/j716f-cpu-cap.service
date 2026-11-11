@@ -1,0 +1,9 @@
+[Unit]
+Description=Cap CPU frequencies for stability
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-cpu-cap.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target

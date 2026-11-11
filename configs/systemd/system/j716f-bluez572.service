@@ -1,0 +1,14 @@
+[Unit]
+Description=BlueZ 5.72 for QCA6390 (J716F)
+After=dbus.service
+Conflicts=bluetooth.service
+Before=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/opt/j716f-bluez572/usr/libexec/bluetooth/bluetoothd -n
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

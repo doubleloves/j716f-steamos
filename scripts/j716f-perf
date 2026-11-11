@@ -1,0 +1,52 @@
+#!/bin/bash
+# J716F performance profiles.
+# 2026-11-07: stability first. Voltage is NOT software-controllable on mainline
+# (CPU volts come from the bootloader LUT via qcom-cpufreq-hw; GPU is GMU/RPMh ARC),
+# so "undervolt" would require a kernel patch. Instead: cap frequencies (lower power)
+# and let a thermal guard swing between profiles.
+#   balanced  (default): CPU 2.42/2.25/1.8 GHz, GPU 305-525 MHz, schedutil
+#   performance        : CPU 2.84/2.42/1.8 GHz, GPU 305-587 MHz, schedutil
+#   gaming             : CPU performance governor at *stable* caps (2.36/2.24), GPU 305-587
+#   eco                : CPU 2.27/1.96/1.52 GHz, GPU 305-441 MHz, schedutil
+#   safe               : original conservative pins (GPU 400, capped big cores)
+# NOTE 2026-11-07: the 3.19GHz "extreme" mode was REMOVED together with the modified
+# boot image/DTB — the decompiled+recompiled DTB caused the dual-DSI left/right split.
+# 2026-11-08: source-built DTB now exposes 3187200 (3.1872GHz); performance profile allows it, schedutil only boosts under load.
+GPU=/sys/class/devfreq/3d00000.gpu
+UFS=/sys/class/devfreq/1d84000.ufshc
+CONF=/etc/j716f-perf.conf
+MODE="${1:-apply}"
+
+as_root() { [ "$(id -u)" = 0 ] || { echo "need root (sudo $0 $MODE)"; exit 1; }; }
+set_cpu() { # p0max p4max p7max  (mins always low)
+  echo 1804800 > /sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq
+  echo "$1" > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+  echo 710400 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq
+  echo "$2" > /sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq
+  echo 844800 > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq
+  echo "$3" > /sys/devices/system/cpu/cpufreq/policy7/scaling_max_freq
+  for p in 0 4 7; do echo schedutil > /sys/devices/system/cpu/cpufreq/policy$p/scaling_governor; done
+}
+gpu_range() { echo simple_ondemand > $GPU/governor 2>/dev/null || true; echo "$1" > $GPU/min_freq; echo "$2" > $GPU/max_freq; }
+gpu_fixed() { echo simple_ondemand > $GPU/governor 2>/dev/null || true; echo "$1" > $GPU/min_freq; echo "$1" > $GPU/max_freq; }
+ufs_max() { echo simple_ondemand > $UFS/governor 2>/dev/null || true; echo 300000000 > $UFS/min_freq; echo 300000000 > $UFS/max_freq; }
+
+mode_balanced()    { set_cpu 1804800 2246400 2361600; gpu_range 305000000 525000000; ufs_max; }
+mode_performance() { set_cpu 1804800 2419200 2841600; gpu_range 305000000 587000000; ufs_max; }
+mode_gaming()      { set_cpu 1804800 2246400 2361600; for p in 0 4 7; do echo performance > /sys/devices/system/cpu/cpufreq/policy$p/scaling_governor; done; gpu_range 305000000 587000000; ufs_max; }
+mode_eco()         { set_cpu 1516800 1958400 2265600; gpu_range 305000000 441600000; ufs_max; }
+mode_safe()        { set_cpu 1804800 2246400 2361600; echo 1574400 > /sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq; echo 1862400 > /sys/devices/system/cpu/cpufreq/policy7/scaling_min_freq; gpu_fixed 400000000; ufs_max; }
+
+status() {
+  echo "mode file: $(cat $CONF 2>/dev/null)"
+  for p in 0 4 7; do echo "policy$p min=$(cat /sys/devices/system/cpu/cpufreq/policy$p/scaling_min_freq) max=$(cat /sys/devices/system/cpu/cpufreq/policy$p/scaling_max_freq) cur=$(cat /sys/devices/system/cpu/cpufreq/policy$p/scaling_cur_freq) gov=$(cat /sys/devices/system/cpu/cpufreq/policy$p/scaling_governor)"; done
+  echo "gpu min=$(cat $GPU/min_freq) max=$(cat $GPU/max_freq) cur=$(cat $GPU/cur_freq) gov=$(cat $GPU/governor)"
+  echo "gpu temp=$(cat /sys/class/thermal/thermal_zone15/temp 2>/dev/null) cpu temp=$(cat /sys/class/thermal/thermal_zone5/temp 2>/dev/null) cpu7 temp=$(cat /sys/class/thermal/thermal_zone10/temp 2>/dev/null)"
+  echo "charger current=$(cat /sys/class/power_supply/pm8150b-charger/current_now 2>/dev/null) icl=$(cat /sys/class/power_supply/pm8150b-charger/current_max 2>/dev/null) batt=$(cat /sys/class/power_supply/bq27541-0/capacity 2>/dev/null)% $(cat /sys/class/power_supply/bq27541-0/status 2>/dev/null)"
+}
+
+case "$MODE" in
+  balanced|performance|gaming|eco|safe) as_root; "mode_$MODE"; status;;
+  status) status;;
+  apply|*) as_root; m=$(sed -n 's/^MODE=//p' "$CONF" 2>/dev/null); m=${m:-balanced}; "mode_$m"; ufs_max; status;;
+esac

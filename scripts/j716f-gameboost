@@ -1,0 +1,7 @@
+#!/bin/bash
+# Toggle gaming performance profile (no charging control; normal charging is left untouched).
+case "${1:-on}" in
+  on)  exec /usr/local/bin/j716f-perf performance ;;
+  off) exec /usr/local/bin/j716f-perf balanced ;;
+  *) echo "usage: j716f-gameboost on|off"; exit 1 ;;
+esac

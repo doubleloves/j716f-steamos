@@ -1,0 +1,16 @@
+[Unit]
+Description=J716F first boot setup (resize rootfs, machine-id, SSH keys)
+ConditionPathExists=!/var/lib/j716f-firstboot.done
+After=local-fs.target
+Before=display-manager.service getty@tty1.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/j716f-firstboot.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

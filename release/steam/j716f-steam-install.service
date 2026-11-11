@@ -1,0 +1,17 @@
+[Unit]
+Description=J716F: install Steam on first boot (user's own download)
+# 只在发布版（未包含 Steam）时需要；安装成功后写 /var/lib/j716f/steam-installed 并 disable 本服务。
+ConditionPathExists=!/var/lib/j716f/steam-installed
+ConditionPathExists=/usr/local/sbin/j716f-install-steam.sh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/j716f-install-steam.sh --auto
+TimeoutStartSec=2400
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

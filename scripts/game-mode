@@ -1,0 +1,43 @@
+#!/bin/bash
+# 游戏性能模式开关：game-mode on|off|status
+set -u
+case "${1:-status}" in
+on)
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    echo performance > "$p/scaling_governor" 2>/dev/null || true
+  done
+  # GPU 拉到最高档
+  D=/sys/class/devfreq/3d00000.gpu
+  if [ -d "$D" ]; then
+    MAX=$(cat $D/max_freq 2>/dev/null)
+    echo "userspace" > "$D/governor" 2>/dev/null || true
+    [ -n "$MAX" ] && echo "$MAX" > "$D/min_freq" 2>/dev/null || true
+    [ -n "$MAX" ] && echo "$MAX" > "$D/max_freq" 2>/dev/null || true
+  fi
+  # zram 保活
+  if ! swapon --show | grep -q zram0; then /usr/local/bin/zram-setup-4g >/dev/null 2>&1 || true; fi
+  echo "游戏模式: ON (CPU performance, GPU max)"
+  ;;
+off)
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    echo schedutil > "$p/scaling_governor" 2>/dev/null || true
+  done
+  D=/sys/class/devfreq/3d00000.gpu
+  if [ -d "$D" ]; then
+    MIN=$(cat $D/../3d00000.gpu/min_freq 2>/dev/null)
+    echo "simple_ondemand" > "$D/governor" 2>/dev/null || true
+    echo 305000000 > "$D/min_freq" 2>/dev/null || true
+  fi
+  echo "游戏模式: OFF (schedutil, GPU 动态)"
+  ;;
+status)
+  echo "CPU governors:"
+  for p in /sys/devices/system/cpu/cpufreq/policy*; do
+    echo "  $(basename $p): $(cat $p/scaling_governor) cur=$(cat $p/scaling_cur_freq)"
+  done
+  echo "GPU: gov=$(cat /sys/class/devfreq/3d00000.gpu/governor 2>/dev/null) cur=$(cat /sys/class/devfreq/3d00000.gpu/cur_freq 2>/dev/null) min=$(cat /sys/class/devfreq/3d00000.gpu/min_freq 2>/dev/null)"
+  echo "Swap: $(free -h | awk '/Swap/{print $2" used "$3}')"
+  ;;
+*)
+  echo "用法: game-mode on|off|status"; exit 1;;
+esac

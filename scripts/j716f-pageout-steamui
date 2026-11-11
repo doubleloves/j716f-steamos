@@ -1,0 +1,6 @@
+#!/bin/bash
+# Page out anonymous Steam UI pages to zram only while a Steam game is running.
+pgrep -f 'reaper SteamLaunch AppId=' >/dev/null 2>&1 || exit 0
+for p in $(pgrep -f steamwebhelper 2>/dev/null); do
+  /usr/local/bin/j716f-pageout-ui pageout "$p" >/dev/null 2>&1 || true
+done

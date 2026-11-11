@@ -1,0 +1,6 @@
+[Unit]
+Description=J716F CPU layout (UI 0-2, background 3, game 4-7)
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/j716f-cpu-layout
